@@ -1,0 +1,30 @@
+# === 数据集（不上传） ===
+E1/data/
+
+# === Python 缓存 ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === IDE 配置 ===
+.idea/
+.claude/
+.trae/
+
+# === 日志 ===
+debug.log
+*.log
+
+# === 生成的文件 ===
+*.mp4
+*.csv
+*.zip
+*.png
+*.vsdx
+E2/绘图/
+
+# === 模型 checkpoint ===
+*.pth
+
+# === 轨迹数据（生成） ===
+trajectory_data.json

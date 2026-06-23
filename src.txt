@@ -1,0 +1,7 @@
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple/
+
+pip install -i https://mirrors.aliyun.com/pypi/simple/
+
+pip install -i https://pypi.mirrors.ustc.edu.cn/simple/
+
+poetry source add aliyun https://mirrors.aliyun.com/pypi/simple/
