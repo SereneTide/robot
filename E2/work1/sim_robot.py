@@ -114,13 +114,15 @@ class SimRobot:
         if wait:
             self._wait_until_joints_reached(PHOTO_JOINTS, label="拍照位")
 
-    def goto_joint_pose(self, joint_angles: list, tolerance: float = None) -> bool:
+    def goto_joint_pose(self, joint_angles: list, tolerance: float = None,
+                        trail_color: tuple = None) -> bool:
         """
             输入关节弧度，控制各关节运动至目标角度。
 
             参数:
                 joint_angles: 目标关节角度列表 (弧度, 长度=7)
                 tolerance: 到达容差，默认使用全局JOINT_TOLERANCE
+                trail_color: 若提供(R,G,B)元组，绘制末端轨迹线条。
             返回: True成功到达 / False超时未到达
         """
         if tolerance is None:
@@ -130,7 +132,8 @@ class SimRobot:
               str([round(a, 3) for a in joint_angles]))
         self._set_joint_positions(joint_angles)
 
-        return self._wait_until_joints_reached(joint_angles, label="关节目标")
+        return self._wait_until_joints_reached(joint_angles, label="关节目标",
+                                               trail_color=trail_color)
 
     def go_to_point(self, x: float, y: float, z: float,
                     orn: tuple = None) -> tuple:
@@ -169,7 +172,9 @@ class SimRobot:
 
     def move_one_point(self, x: float, y: float, z: float,
                        steps: int = None, orn: tuple = None,
-                       log: bool = True) -> tuple:
+                       log: bool = True,
+                       collision_callback: callable = None,
+                       trail_color: tuple = None) -> tuple:
         """
         机械臂末端平滑移动至单个空间坐标，采用线性插值->IK求解->逐点位置控制。
 
@@ -178,10 +183,16 @@ class SimRobot:
             steps: 插值步数 (默认MOVE_STEPS)
             orn: 目标末端姿态四元数
             log: 是否打印日志
+            collision_callback: 每插值步回调，签名为 callback(interp_pos: tuple) -> bool，
+                                返回True表示可提前终止运动。
+            trail_color: 若提供(R,G,B)元组，则在末端移动路径上绘制可视化轨迹线条。
         返回: (success, trajectory)
         """
         if steps is None:
             steps = MOVE_STEPS
+
+        if orn is None:
+            orn = p.getQuaternionFromEuler([0, np.pi, 0])
 
         start_pos = self.get_end_effector_pos()
         start = np.array(start_pos)
@@ -192,6 +203,8 @@ class SimRobot:
                   (start[0], start[1], start[2], target[0], target[1], target[2], steps))
 
         trajectory = []
+        early_stop = False
+        prev_trail_pos = start_pos
         for i in range(1, steps + 1):
             alpha = i / float(steps)
             interp = start + alpha * (target - start)
@@ -201,21 +214,39 @@ class SimRobot:
                 self.robot_id,
                 self.ee_link_index,
                 targetPosition=interp.tolist(),
+                targetOrientation=orn,
                 physicsClientId=self.client_id,
             )
 
             self._set_joint_positions(list(joint_angles))
             for _ in range(SIM_STEPS_PER_CMD):
                 p.stepSimulation(physicsClientId=self.client_id)
+                if trail_color is not None:
+                    cur_pos = self.get_end_effector_pos()
+                    p.addUserDebugLine(
+                        prev_trail_pos, cur_pos,
+                        lineColorRGB=trail_color,
+                        lineWidth=2,
+                        lifeTime=0,
+                        physicsClientId=self.client_id,
+                    )
+                    prev_trail_pos = cur_pos
+                if collision_callback is not None:
+                    actual_pos = self.get_end_effector_pos()
+                    if collision_callback(actual_pos):
+                        early_stop = True
+                        break
+            if early_stop:
+                break
 
         final_pos = self.get_end_effector_pos()
         error = np.linalg.norm(np.array(final_pos) - target)
-        success = error < POSITION_TOLERANCE
+        success = (error < POSITION_TOLERANCE) or early_stop
 
         if log:
-            status = "[OK]" if success else "[WARN]偏差过大"
+            tag = "[EARLY_STOP]" if early_stop else ("[OK]" if error < POSITION_TOLERANCE else "[WARN]偏差过大")
             print("[机械臂] %s -> 最终位置(% .3f, % .3f, % .3f), 误差=% .4f m" %
-                  (status, final_pos[0], final_pos[1], final_pos[2], error))
+                  (tag, final_pos[0], final_pos[1], final_pos[2], error))
 
         return (success, trajectory)
 
@@ -257,7 +288,8 @@ class SimRobot:
 
     def _wait_until_joints_reached(self, target_joints: list,
                                     label: str = "",
-                                    max_iter: int = 5000) -> bool:
+                                    max_iter: int = 5000,
+                                    trail_color: tuple = None) -> bool:
         """
         阻塞等待直到所有关节到达目标角度（或超时）。
 
@@ -265,12 +297,24 @@ class SimRobot:
             target_joints: 目标关节角度
             label: 日志标签
             max_iter: 最大等待迭代次数
+            trail_color: 若提供(R,G,B)元组，绘制末端轨迹线条。
         返回: True到达 / False超时
         """
         steps_per_check = 5
+        prev_pos = self.get_end_effector_pos()
         for check_count in range(max_iter // steps_per_check):
             for _ in range(steps_per_check):
                 p.stepSimulation(physicsClientId=self.client_id)
+                if trail_color is not None:
+                    cur_pos = self.get_end_effector_pos()
+                    p.addUserDebugLine(
+                        prev_pos, cur_pos,
+                        lineColorRGB=trail_color,
+                        lineWidth=2,
+                        lifeTime=0,
+                        physicsClientId=self.client_id,
+                    )
+                    prev_pos = cur_pos
             if self._joints_reached(target_joints):
                 total_steps = (check_count + 1) * steps_per_check
                 if label:

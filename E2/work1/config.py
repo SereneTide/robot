@@ -31,10 +31,6 @@ TABLE_URDF = "table_square/table_square.urdf"
 TABLE_POS = (0.45, 0.0, 0.0)
 TABLE_ORN = (0, 0, 0, 1)
 
-SHELF_URDF = "kiva_shelf/model.sdf"
-SHELF_POS = (0.45, 1.2, 0.0)
-SHELF_ORN = (0, 0, 0, 1)
-
 # 物块配置
 CUBE_NUM = 5
 CUBE_HALF_EXTENTS = (0.025, 0.025, 0.025)
@@ -46,7 +42,7 @@ CUBE_POS_LIST = [
     (0.40, -0.05, 0.025),
     (0.50,  0.05, 0.025),
     (0.55,  0.12, 0.025),
-    (0.57,  0.13, 0.025),
+    (0.60,  0.17, 0.025),
 ]
 
 # 物块颜色 (RGBA)
@@ -59,8 +55,9 @@ CUBE_COLORS = [
 ]
 
 # 抓取运动参数
-SAFE_Z = 0.85
+SAFE_Z = 0.50  # 安全高度（米），需保证所有物块xy位置下均在机械臂可达空间内
 GRASP_OFFSET_Z = 0.03
+GRASP_THRESHOLD = 0.05  # 末端与物块碰撞检测的距离阈值（米）
 
 # 相机配置 (视觉模块预留)
 CAMERA_EYE_POS = (0.5, -0.8, 1.2)

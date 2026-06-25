@@ -8,10 +8,16 @@ class MapFromPoints:
     """
 
     def __init__(self, obstacle_points: list, resolution: float, margin: float,
-                 half_extents: tuple):
-        """根据障碍物点集创建二维二值网格地图。"""
+                 half_extents: tuple, clearance: float = 0.0):
+        """根据障碍物点集创建二维二值网格地图。
+
+        参数:
+            clearance: 障碍物膨胀距离（安全包络），用于把机械臂本体体积
+                       近似考虑到网格中。
+        """
         self.resolution = resolution
         self.half_extents = half_extents[:2]  # (hx, hy)
+        self.clearance = clearance
 
         obs_xy = np.array([(p[0], p[1]) for p in obstacle_points])
 
@@ -32,13 +38,14 @@ class MapFromPoints:
                self.x_min, self.x_max, self.y_min, self.y_max))
 
     def _mark_obstacles(self, obs_xy: np.ndarray):
-        """将障碍物占据的网格单元标记为1。"""
+        """将障碍物占据的网格单元标记为1（含安全包络膨胀）。"""
         hx, hy = self.half_extents
+        margin = self.clearance
         for ox, oy in obs_xy:
-            u_min = max(0, self.world_to_grid_u(ox - hx))
-            u_max = min(self.cols - 1, self.world_to_grid_u(ox + hx))
-            v_min = max(0, self.world_to_grid_v(oy - hy))
-            v_max = min(self.rows - 1, self.world_to_grid_v(oy + hy))
+            u_min = max(0, self.world_to_grid_u(ox - hx - margin))
+            u_max = min(self.cols - 1, self.world_to_grid_u(ox + hx + margin))
+            v_min = max(0, self.world_to_grid_v(oy - hy - margin))
+            v_max = min(self.rows - 1, self.world_to_grid_v(oy + hy + margin))
             for v in range(v_min, v_max + 1):
                 for u in range(u_min, u_max + 1):
                     self.grid[v, u] = 1
@@ -122,7 +129,7 @@ class MapFromPoints:
         import matplotlib.patches as mpatches
 
         cmap = plt.cm.colors.ListedColormap(['white', '#444444'])
-        ax.imshow(self.grid, cmap=cmap, origin='upper',
+        ax.imshow(self.grid, cmap=cmap, origin='lower',
                   extent=[self.x_min, self.x_max, self.y_min, self.y_max],
                   aspect='equal', interpolation='nearest')
 
@@ -267,3 +274,94 @@ class MapFromPoints:
         plt.tight_layout()
         plt.show(block=False)
         print("[网格地图] A*/RRT 叠加对比图窗口已弹出")
+
+
+def draw_rrt_3d(cube_positions: list, half_extents: tuple,
+                rrt3d_world_path: list = None,
+                start_xyz: tuple = None, goal_xyz: tuple = None,
+                title: str = "RRT 3D Path Planning"):
+    """绘制三维RRT路径可视化：物块(半透明)+路径线+起终点。
+
+    参数:
+        cube_positions:  障碍物立方体中心坐标 [(cx,cy,cz), ...]
+        half_extents:    立方体半边长 (hx, hy, hz)
+        rrt3d_world_path: RRT 3D路径点 [(x,y,z), ...]
+        start_xyz:       起点 (sx, sy, sz)
+        goal_xyz:        终点 (gx, gy, gz)
+        title:           图表标题
+    """
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    hx, hy, hz = half_extents
+
+    # 绘制所有障碍物立方体（半透明灰色）
+    for cx, cy, cz in cube_positions:
+        xc = [cx - hx, cx + hx]
+        yc = [cy - hy, cy + hy]
+        zc = [cz - hz, cz + hz]
+
+        verts = []
+        # 6个面
+        for xs, xe in [(xc[0], xc[1])]:
+            for ys, ye in [(yc[0], yc[1])]:
+                verts.append([
+                    (xs, ys, zc[0]), (xe, ys, zc[0]),
+                    (xe, ye, zc[0]), (xs, ye, zc[0])
+                ])
+                verts.append([
+                    (xs, ys, zc[1]), (xe, ys, zc[1]),
+                    (xe, ye, zc[1]), (xs, ye, zc[1])
+                ])
+            for zs, ze in [(zc[0], zc[1])]:
+                verts.append([
+                    (xs, yc[0], zs), (xe, yc[0], zs),
+                    (xe, yc[0], ze), (xs, yc[0], ze)
+                ])
+                verts.append([
+                    (xs, yc[1], zs), (xe, yc[1], zs),
+                    (xe, yc[1], ze), (xs, yc[1], ze)
+                ])
+
+        # 区分底层(红色系)和上层(绿色系)障碍物颜色
+        if cz < 0.06:
+            face_color = (0.8, 0.3, 0.3, 0.35)
+            edge_color = (0.6, 0.2, 0.2, 0.6)
+        else:
+            face_color = (0.3, 0.7, 0.3, 0.35)
+            edge_color = (0.2, 0.5, 0.2, 0.6)
+
+        poly = Poly3DCollection(verts, alpha=0.35, facecolors=face_color,
+                                edgecolors=edge_color, linewidths=0.5)
+        ax.add_collection3d(poly)
+
+    # 绘制RRT 3D路径
+    if rrt3d_world_path is not None and len(rrt3d_world_path) > 0:
+        xs = [p[0] for p in rrt3d_world_path]
+        ys = [p[1] for p in rrt3d_world_path]
+        zs = [p[2] for p in rrt3d_world_path]
+        ax.plot(xs, ys, zs, color='darkorange', linewidth=2.5,
+                marker='.', markersize=2, zorder=10, label='RRT 3D Path')
+
+    # 起点/终点
+    if start_xyz is not None:
+        ax.scatter(*start_xyz, c='limegreen', s=150, marker='o',
+                   edgecolors='black', linewidths=1.2, zorder=20,
+                   label='Start')
+    if goal_xyz is not None:
+        ax.scatter(*goal_xyz, c='red', s=150, marker='X',
+                   edgecolors='black', linewidths=1.2, zorder=20,
+                   label='Goal')
+
+    ax.set_xlabel('X (m)', fontsize=11)
+    ax.set_ylabel('Y (m)', fontsize=11)
+    ax.set_zlabel('Z (m)', fontsize=11)
+    ax.set_title(title, fontsize=13, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
+    plt.tight_layout()
+    plt.show(block=False)
+    print("[3D可视化] RRT 3D轨迹窗口已弹出")

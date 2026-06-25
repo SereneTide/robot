@@ -9,6 +9,7 @@ from config import (
     JOINT_TOLERANCE, POSITION_TOLERANCE,
     MAX_FORCE, MAX_VELOCITY,
     MOVE_STEPS, SIM_STEPS_PER_CMD,
+    EE_TARGET_ORIENTATION,
 )
 
 class SimRobot:
@@ -54,8 +55,11 @@ class SimRobot:
             print("[机械臂] 待机位归位完成")
 
     def move_one_point(self, x: float, y: float, z: float,
+                       orientation: tuple = None,
                        steps: int = None, log: bool = True) -> tuple:
         """末端平滑移动至目标空间坐标（Cartesian线性插值→IK→逐点控制）。返回 (success, trajectory)。"""
+        if orientation is None:
+            orientation = EE_TARGET_ORIENTATION
         if steps is None:
             steps = MOVE_STEPS
         start = np.array(self.get_end_effector_pos())
@@ -69,7 +73,9 @@ class SimRobot:
             interp = start + alpha * (target - start)
             trajectory.append(tuple(interp))
             j_angles = p.calculateInverseKinematics(
-                self.robot_id, self.ee_link_index, targetPosition=interp.tolist(),
+                self.robot_id, self.ee_link_index,
+                targetPosition=interp.tolist(),
+                targetOrientation=orientation,
                 physicsClientId=self.client_id)
             self._set_joint_positions(list(j_angles))
             for _ in range(SIM_STEPS_PER_CMD):

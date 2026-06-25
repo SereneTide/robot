@@ -1,10 +1,10 @@
 import pybullet as p
 import pybullet_data
+import numpy as np
 
 from config import (
     PYBULLET_GUI, GRAVITY, SIM_STEP_DT,
     PLANE_URDF,
-    SHELF_URDF, SHELF_POS, SHELF_ORN,
     CUBE_NUM, CUBE_HALF_EXTENTS, CUBE_MASS, CUBE_POS_LIST, CUBE_COLORS,
     CAMERA_TARGET_POS,
 )
@@ -25,7 +25,6 @@ class Scene:
         p.setTimeStep(SIM_STEP_DT, physicsClientId=self.client_id)
 
         self.plane_id = None
-        self.shelf_id = None
         self.cube_ids = []
 
         print("[场景] PyBullet物理仿真客户端初始化完成，模式: %s" %
@@ -33,12 +32,11 @@ class Scene:
         print("[场景] 重力: %s, 时间步长: %.4f s" % (str(GRAVITY), SIM_STEP_DT))
 
     def draw_workspace(self):
-        """加载地面、货架、批量生成物块，设置全局相机视角。"""
+        """加载地面、批量生成物块，设置全局相机视角。"""
         self._load_ground()
-        self._load_shelf()
         self._create_blocks()
         self._setup_camera()
-        print("[场景] 工作场景绘制完成：地面 + 货架 + %d个物块（地面摆放）" % CUBE_NUM)
+        print("[场景] 工作场景绘制完成：地面 + %d个物块（地面摆放）" % CUBE_NUM)
 
     def _load_ground(self):
         """加载地面平面。"""
@@ -48,20 +46,6 @@ class Scene:
             physicsClientId=self.client_id,
         )
         print("[场景] 地面加载完成, ID=%d" % self.plane_id)
-
-    def _load_shelf(self):
-        """加载货架作为工业场景元素。"""
-        self.shelf_id = p.loadSDF(
-            SHELF_URDF,
-            physicsClientId=self.client_id,
-        )[0]  # loadSDF返回列表，取第一个物体ID
-        p.resetBasePositionAndOrientation(
-            self.shelf_id,
-            SHELF_POS,
-            p.getQuaternionFromEuler(SHELF_ORN[:3]),
-            physicsClientId=self.client_id,
-        )
-        print("[场景] 货架加载完成, 位置=%s, ID=%d" % (str(SHELF_POS), self.shelf_id))
 
     def _create_blocks(self):
         """批量生成分拣物料方块，使用PyBullet碰撞与视觉形状创建彩色立方体。"""
@@ -105,6 +89,26 @@ class Scene:
             physicsClientId=self.client_id,
         )
         print("[场景] 相机视角设置完成, 注视点=%s" % str(CAMERA_TARGET_POS))
+
+    def remove_block_if_near(self, point: tuple, threshold: float) -> bool:
+        """检查末端位置是否与某个剩余物块的距离小于阈值，若是则移除该物块。
+
+        参数:
+            point: 末端执行器世界坐标 (x, y, z)
+            threshold: 碰撞判定距离阈值（米）
+        返回: True 有物块被移除 / False 无物块被移除
+        """
+        for cube_id in self.cube_ids[:]:
+            pos, _ = p.getBasePositionAndOrientation(
+                cube_id, physicsClientId=self.client_id)
+            dist = np.linalg.norm(np.array(pos) - np.array(point))
+            if dist < threshold:
+                p.removeBody(cube_id, physicsClientId=self.client_id)
+                self.cube_ids.remove(cube_id)
+                print("[场景] 碰撞检测触发: 物块 ID=%d 被移除, 距离=%.4f m (阈值=%.3f)" %
+                      (cube_id, dist, threshold))
+                return True
+        return False
 
     def get_cube_positions(self) -> list:
         """获取所有物块当前世界坐标。"""

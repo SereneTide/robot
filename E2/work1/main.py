@@ -4,7 +4,7 @@ import json
 import os
 
 from config import (
-    SAFE_Z, GRASP_OFFSET_Z,
+    SAFE_Z, GRASP_OFFSET_Z, GRASP_THRESHOLD,
     CUBE_POS_LIST, CUBE_NUM,
 )
 from scene import Scene
@@ -82,8 +82,9 @@ class TrajectoryLogger:
 class PickAndPlacePipeline:
     """物块遍历抓取流水线，按指定路径模式依次遍历所有物块，记录全程轨迹。"""
 
-    def __init__(self, robot: SimRobot, logger: TrajectoryLogger):
+    def __init__(self, robot: SimRobot, scene: Scene, logger: TrajectoryLogger):
         self.robot = robot
+        self.scene = scene
         self.logger = logger
         self.cube_positions = CUBE_POS_LIST
 
@@ -130,9 +131,15 @@ class PickAndPlacePipeline:
                 start_pos=start_ee, end_pos=grasp_pos,
                 start_ee=start_ee,
             )
-            self.robot.move_one_point(cx, cy, cz + GRASP_OFFSET_Z, log=False)
+            self.robot.move_one_point(cx, cy, cz + GRASP_OFFSET_Z, log=False,
+                                     collision_callback=lambda pos: self.scene.remove_block_if_near(pos, GRASP_THRESHOLD))
             end_ee = self.robot.get_end_effector_pos()
             self.logger.complete_last(end_ee)
+
+            # 碰撞检测：末端到达物块上方时，判断距离是否在阈值内，若是则移除物块
+            if self.scene.remove_block_if_near(end_ee, GRASP_THRESHOLD):
+                print("[流水线] 物块#%d 已被抓取移除" % (i + 1))
+
             start_ee = self.robot.get_end_effector_pos()
             print("[流水线] 阶段vertical_ascend -> 抬升至安全高度 "
                   "(%.3f, %.3f, %.3f)" % (cx, cy, SAFE_Z))
@@ -160,7 +167,7 @@ def main():
     scene.draw_workspace()
     robot = SimRobot(scene_client_id=scene.client_id)
     traj_logger = TrajectoryLogger()
-    pipeline = PickAndPlacePipeline(robot, traj_logger)
+    pipeline = PickAndPlacePipeline(robot, scene, traj_logger)
 
     print("\n[主程序] 仿真初始化完成，等待物理稳定...")
     for _ in range(200):
