@@ -1,0 +1,27 @@
+# Python 编译缓存
+__pycache__/
+*.pyc
+
+# 输出视频
+*.mp4
+
+# 压缩包
+*.zip
+
+# 临时文件
+temp.py
+
+# 生成图表
+chapter7_figures/
+
+# 运行生成数据
+work1/trajectory_data.json
+
+# 本地绘图文件
+绘图/
+
+# 实验文档（仅保留代码）
+实验报告.md
+实验报告2.0.md
+实验要求.md
+文献.txt
