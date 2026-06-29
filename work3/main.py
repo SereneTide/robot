@@ -16,13 +16,13 @@ from scene import Scene
 from sim_robot import SimRobot
 from map_tools import MapFromPoints, draw_rrt_3d
 from path_astar import astar_plan
-from path_rrt import rrt_plan, rrt_plan_3d
+from path_rrt import rrt_plan, rrt_plan_3d, _point_in_cubes
 
 
-def _check_collision_with_cubes(grid_map, wx: float, wy: float,
-                                 cube_positions: list,
-                                 half_extents: tuple,
-                                 clearance: float = 0.0) -> bool:
+def _check_collision_with_cubes_2d(grid_map, wx: float, wy: float,
+                                    cube_positions: list,
+                                    half_extents: tuple,
+                                    clearance: float = 0.0) -> bool:
     """检测末端 (wx,wy,PATH_Z) 是否与任何物块碰撞（含安全包络）。"""
     hx, hy = half_extents[:2]
     margin = clearance
@@ -30,6 +30,38 @@ def _check_collision_with_cubes(grid_map, wx: float, wy: float,
         if abs(wx - cx) <= hx + margin and abs(wy - cy) <= hy + margin:
             return True
     return False
+
+
+def _recover_to_safe(robot, cube_positions: list, half_extents: tuple,
+                     clearance: float, is_3d: bool = False):
+    """碰撞恢复：抬升至SAFE_Z清除物理卡死状态。"""
+    curr = robot.get_end_effector_pos()
+    print("[恢复] 抬升至安全高度 (%.3f, %.3f, %.3f) → z=%.3f" %
+          (curr[0], curr[1], curr[2], SAFE_Z))
+    robot.move_one_point(curr[0], curr[1], SAFE_Z, log=False)
+
+
+def _find_next_safe_waypoint_2d(world_path: list, start_idx: int,
+                                  cube_positions: list, half_extents: tuple,
+                                  clearance: float) -> int:
+    """从start_idx开始扫描，返回第一个无碰撞的2D路径点索引。找不到返回-1。"""
+    for j in range(start_idx, len(world_path)):
+        wx, wy = world_path[j]
+        if not _check_collision_with_cubes_2d(None, wx, wy, cube_positions,
+                                               half_extents, clearance):
+            return j
+    return -1
+
+
+def _find_next_safe_waypoint_3d(world_path: list, start_idx: int,
+                                  cube_positions: list, half_extents: tuple,
+                                  clearance: float) -> int:
+    """从start_idx开始扫描，返回第一个无碰撞的3D路径点索引。找不到返回-1。"""
+    for j in range(start_idx, len(world_path)):
+        wx, wy, wz = world_path[j]
+        if not _point_in_cubes(wx, wy, wz, cube_positions, half_extents, clearance):
+            return j
+    return -1
 
 
 def _draw_path_marker(pos: tuple, color: tuple, size: float = 0.02,
@@ -44,15 +76,19 @@ def _draw_path_marker(pos: tuple, color: tuple, size: float = 0.02,
 
 
 def execute_path_3d(robot, world_path_3d: list, label: str,
+                    cube_positions: list, half_extents: tuple,
                     client_id: int):
     """
-    驱动机械臂末端沿3D路径点列表移动。
-    流程: 安全位 → 起点SAFE_Z → 下降至起点Z → 沿3D路径运动 → 终点抬升SAFE_Z → 待机位。
+    驱动机械臂末端沿3D路径点列表移动（含碰撞预检+恢复）。
+    流程: 安全位 → 起点SAFE_Z → 下降至起点Z → 沿3D路径运动 → 终点抬升SAFE_Z。
+    路径中遇到碰撞点时自动抬升SAFE_Z恢复并跳过。
     """
     print("\n[路径执行3D] %s: 点数=%d" % (label, len(world_path_3d)))
 
     sx, sy, sz = world_path_3d[0]
     gx, gy, gz = world_path_3d[-1]
+    collision_count = 0
+    unreachable_count = 0
 
     # 阶段1: 移至起点正上方(SAFE_Z)
     print("[%s-3D] 阶段1: 移至起点正上方 (%.3f, %.3f, %.3f)" % (label, sx, sy, SAFE_Z))
@@ -62,27 +98,72 @@ def execute_path_3d(robot, world_path_3d: list, label: str,
     print("[%s-3D] 阶段2: 下降至起点高度 (%.3f, %.3f, %.3f)" % (label, sx, sy, sz))
     robot.move_one_point(sx, sy, sz, log=True)
 
-    # 阶段3: 沿3D路径逐点运动
+    # 阶段3: 沿3D路径逐点运动（含碰撞预检与恢复）
     print("[%s-3D] 阶段3: 沿3D路径运动 (%d个点)" % (label, len(world_path_3d)))
-    for i, (wx, wy, wz) in enumerate(world_path_3d):
+    i = 0
+    while i < len(world_path_3d):
+        wx, wy, wz = world_path_3d[i]
         if i % max(1, len(world_path_3d) // 10) == 0:
             print("[%s-3D] 第%d/%d点: (%.3f, %.3f, %.3f)" %
                   (label, i + 1, len(world_path_3d), wx, wy, wz))
-        robot.move_one_point(wx, wy, wz, log=False)
+
+        # 碰撞预检
+        if _point_in_cubes(wx, wy, wz, cube_positions, half_extents, ROBOT_CLEARANCE):
+            collision_count += 1
+            print("[碰撞预警3D] %s 第%d点 (%.3f,%.3f,%.3f) 与物块碰撞!" %
+                  (label, i + 1, wx, wy, wz))
+            _recover_to_safe(robot, cube_positions, half_extents, ROBOT_CLEARANCE)
+            # 跳过后续连续碰撞点
+            i = _find_next_safe_waypoint_3d(world_path_3d, i + 1,
+                                             cube_positions, half_extents, ROBOT_CLEARANCE)
+            if i < 0:
+                print("[%s-3D] 剩余路径点全部碰撞，终止执行" % label)
+                break
+            wjx, wjy, wjz = world_path_3d[i]
+            print("[%s-3D] 恢复: 跳过碰撞段，从第%d点 (%.3f,%.3f,%.3f) 继续" %
+                  (label, i + 1, wjx, wjy, wjz))
+            robot.move_one_point(wjx, wjy, SAFE_Z, log=False)
+            robot.move_one_point(wjx, wjy, wjz, log=False)
+            i += 1
+            continue
+
+        success, _ = robot.move_one_point(wx, wy, wz, log=False)
+        if not success:
+            unreachable_count += 1
+            print("[不可达3D] %s 第%d点 末端未达目标, 偏差超容差" % (label, i + 1))
+            _recover_to_safe(robot, cube_positions, half_extents, ROBOT_CLEARANCE)
+            i = _find_next_safe_waypoint_3d(world_path_3d, i + 1,
+                                             cube_positions, half_extents, ROBOT_CLEARANCE)
+            if i < 0:
+                print("[%s-3D] 剩余路径点全部不可达，终止执行" % label)
+                break
+            wjx, wjy, wjz = world_path_3d[i]
+            print("[%s-3D] 恢复: 跳过不可达段，从第%d点继续" % (label, i + 1))
+            robot.move_one_point(wjx, wjy, SAFE_Z, log=False)
+            robot.move_one_point(wjx, wjy, wjz, log=False)
+            i += 1
+            continue
+
+        i += 1
 
     # 阶段4: 终点抬升至安全高度
     print("[%s-3D] 阶段4: 终点抬升至安全高度 (%.3f, %.3f, %.3f)" % (label, gx, gy, SAFE_Z))
     robot.move_one_point(gx, gy, SAFE_Z, log=True)
-    print("[%s-3D] 3D路径执行完成" % label)
-    return True
+
+    pass_ok = (collision_count == 0 and unreachable_count == 0)
+    print("[%s-3D] 3D路径执行完成, 碰撞预警=%d, 不可达=%d, 避障=%s" %
+          (label, collision_count, unreachable_count,
+           "PASS" if pass_ok else "RECOVERED(%d/%d)" % (collision_count, unreachable_count)))
+    return pass_ok
 
 
 def execute_path(robot, grid_map, world_path: list, label: str,
                  cube_positions: list, half_extents: tuple,
                  client_id: int):
     """
-    驱动机械臂末端沿路径点列表移动，含完整起降流程与碰撞检测。
+    驱动机械臂末端沿路径点列表移动，含碰撞预检与自动恢复。
     流程: 安全位 → 起点正上方(SAFE_Z) → 下降至(PATH_Z) → 沿路径运动 → 终点抬升(SAFE_Z)。
+    碰撞/不可达时自动抬升SAFE_Z恢复并跳过问题路径段。
     """
     print("\n[路径执行] %s: 点数=%d, 高度=%.3f m" %
           (label, len(world_path), PATH_Z))
@@ -97,29 +178,63 @@ def execute_path(robot, grid_map, world_path: list, label: str,
     # 阶段2: 垂直下降至执行高度(PATH_Z)
     print("[%s] 阶段2: 下降至执行高度 (%.3f, %.3f, %.3f)" % (label, sx, sy, PATH_Z))
     robot.move_one_point(sx, sy, PATH_Z, log=True)
-    # 阶段3: 沿路径逐点运动
+    # 阶段3: 沿路径逐点运动（含碰撞预检与恢复）
     print("[%s] 阶段3: 沿路径运动 (%d个点)" % (label, len(world_path)))
-    for i, (wx, wy) in enumerate(world_path):
+    i = 0
+    while i < len(world_path):
+        wx, wy = world_path[i]
         if i % max(1, len(world_path) // 10) == 0:
             print("[%s] 第%d/%d点: (%.3f, %.3f)" %
                   (label, i + 1, len(world_path), wx, wy))
-        if _check_collision_with_cubes(grid_map, wx, wy, cube_positions,
-                                         half_extents, ROBOT_CLEARANCE):
+
+        # 碰撞预检
+        if _check_collision_with_cubes_2d(grid_map, wx, wy, cube_positions,
+                                           half_extents, ROBOT_CLEARANCE):
             collision_count += 1
-            print("[碰撞日志] %s 第%d点 (%.3f,%.3f) 与物块碰撞!" %
+            print("[碰撞预警] %s 第%d点 (%.3f,%.3f) 与物块碰撞!" %
                   (label, i + 1, wx, wy))
+            _recover_to_safe(robot, cube_positions, half_extents, ROBOT_CLEARANCE)
+            # 跳过后续连续碰撞点
+            i = _find_next_safe_waypoint_2d(world_path, i + 1,
+                                             cube_positions, half_extents, ROBOT_CLEARANCE)
+            if i < 0:
+                print("[%s] 剩余路径点全部碰撞，终止执行" % label)
+                break
+            wjx, wjy = world_path[i]
+            print("[%s] 恢复: 跳过碰撞段，从第%d点 (%.3f,%.3f) 继续" %
+                  (label, i + 1, wjx, wjy))
+            robot.move_one_point(wjx, wjy, SAFE_Z, log=False)
+            robot.move_one_point(wjx, wjy, PATH_Z, log=False)
+            i += 1
+            continue
+
         success, _ = robot.move_one_point(wx, wy, PATH_Z, log=False)
         if not success:
             unreachable_count += 1
-            print("[碰撞日志] %s 第%d点 末端未达目标, 偏差超容差" % (label, i + 1))
+            print("[不可达] %s 第%d点 末端未达目标, 偏差超容差" % (label, i + 1))
+            _recover_to_safe(robot, cube_positions, half_extents, ROBOT_CLEARANCE)
+            i = _find_next_safe_waypoint_2d(world_path, i + 1,
+                                             cube_positions, half_extents, ROBOT_CLEARANCE)
+            if i < 0:
+                print("[%s] 剩余路径点全部不可达，终止执行" % label)
+                break
+            wjx, wjy = world_path[i]
+            print("[%s] 恢复: 跳过不可达段，从第%d点继续" % (label, i + 1))
+            robot.move_one_point(wjx, wjy, SAFE_Z, log=False)
+            robot.move_one_point(wjx, wjy, PATH_Z, log=False)
+            i += 1
+            continue
+
+        i += 1
+
     # 阶段4: 终点抬升至安全高度
     print("[%s] 阶段4: 终点抬升至安全高度 (%.3f, %.3f, %.3f)" % (label, gx, gy, SAFE_Z))
     robot.move_one_point(gx, gy, SAFE_Z, log=True)
     # 汇总
     pass_ok = (collision_count == 0 and unreachable_count == 0)
-    print("[%s] 路径点数=%d, 碰撞=%d, 不可达=%d, 避障=%s" %
+    print("[%s] 路径点数=%d, 碰撞预警=%d, 不可达=%d, 避障=%s" %
           (label, len(world_path), collision_count, unreachable_count,
-           "PASS" if pass_ok else "FAIL"))
+           "PASS" if pass_ok else "RECOVERED(%d/%d)" % (collision_count, unreachable_count)))
     return pass_ok
 
 def main():
@@ -176,7 +291,7 @@ def main():
         )
         a_collisions = 0
         for wx, wy in astar_world_path:
-            if _check_collision_with_cubes(grid_map, wx, wy, cube_positions,
+            if _check_collision_with_cubes_2d(grid_map, wx, wy, cube_positions,
                                            CUBE_HALF_EXTENTS, ROBOT_CLEARANCE):
                 a_collisions += 1
         print("[A*] 世界路径点数=%d, 路径总长=%.4f m, 碰撞点=%d" %
@@ -197,7 +312,7 @@ def main():
         )
         r_collisions = 0
         for wx, wy in rrt_world_path:
-            if _check_collision_with_cubes(grid_map, wx, wy, cube_positions,
+            if _check_collision_with_cubes_2d(grid_map, wx, wy, cube_positions,
                                            CUBE_HALF_EXTENTS, ROBOT_CLEARANCE):
                 r_collisions += 1
         print("[RRT] 世界路径点数=%d, 路径总长=%.4f m, 碰撞点=%d" %
@@ -226,7 +341,6 @@ def main():
             for i in range(len(rrt3d_world_path)-1)
         )
         # AABB碰撞验证
-        from path_rrt import _point_in_cubes
         for wx, wy, wz in rrt3d_world_path:
             if _point_in_cubes(wx, wy, wz, cube_positions,
                                CUBE_HALF_EXTENTS, ROBOT_CLEARANCE):
@@ -327,6 +441,7 @@ def main():
                 if not rrt3d_executed and rrt3d_world_path:
                     print("\n[主程序] [TRIGGER] T键按下，沿RRT3D路径运动\n")
                     execute_path_3d(robot, rrt3d_world_path, "RRT3D",
+                                    cube_positions, CUBE_HALF_EXTENTS,
                                     scene.client_id)
                     rrt3d_executed = True
                 elif rrt3d_executed:
