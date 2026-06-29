@@ -49,7 +49,7 @@ CUBE_COLORS = (
 )
 
 # 抓取运动参数
-SAFE_Z = 0.85
+SAFE_Z = 0.15
 GRASP_OFFSET_Z = 0.03
 
 # 末端执行器姿态：垂直指向地面（绕Y轴旋转180°）
